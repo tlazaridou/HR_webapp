@@ -323,9 +323,30 @@
         </div>
     </div>
 
+    <!-- MODAL: COMPLETED LEAVE REQUEST (Word preview) -->
+    <div id="docPreviewModal" class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm hidden items-center justify-center z-[120] p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-emerald-50 shrink-0">
+                <h3 class="text-lg font-bold text-emerald-900">Leave Request</h3>
+                <div class="flex items-center space-x-2">
+                    <button onclick="downloadLeaveDocument()" class="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl shadow-md transition-all text-sm">
+                        <i class="fas fa-download"></i>
+                        <span>Download</span>
+                    </button>
+                    <button onclick="closeDocPreview()" class="text-gray-400 hover:text-gray-600 p-1 rounded-lg" title="Close">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="docPreviewBody" class="flex-1 overflow-auto bg-slate-200 p-4"></div>
+        </div>
+    </div>
+
     <!-- Flatpickr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
 
     <!-- JAVASCRIPT LOGIC -->
     <script>
@@ -684,17 +705,175 @@
             document.getElementById('submitConfirmModal').classList.add('flex');
         }
 
-        function closeSubmitConfirm(confirmed) {
+        async function closeSubmitConfirm(confirmed) {
             document.getElementById('submitConfirmModal').classList.add('hidden');
             document.getElementById('submitConfirmModal').classList.remove('flex');
-            
-            if (confirmed && modalPendingSubmit) {
-                let modalId = modalPendingSubmit;
-                closeModal(modalId);
-                clearForm(modalId);
-                showToast('Your request was submitted successfully!');
-            }
+
+            if (!confirmed || !modalPendingSubmit) { modalPendingSubmit = null; return; }
+            const modalId = modalPendingSubmit;
             modalPendingSubmit = null;
+
+            if (modalId === 'leaveModal') {
+                try {
+                    const request = readLeaveForm();
+                    const blob = await createLeaveDocument(request);
+                    closeModal(modalId);
+                    clearForm(modalId);
+                    await showDocPreview(blob, 'leave-request - ' + request.employeeName + '.docx');
+                } catch (error) {
+                    showToast(error instanceof Error ? error.message : 'Could not create the leave request.', 'error');
+                }
+                return;
+            }
+
+            closeModal(modalId);
+            clearForm(modalId);
+            showToast('Your request was submitted successfully!');
+        }
+
+        // ---- Leave request document ----
+        const LEAVE_TYPES = { 'Annual Vacation': 'Κανονική', 'Sick Leave': 'Αναρρωτική', 'Personal Leave': 'Ειδική', 'Other': 'Ειδική' };
+        const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        const XML_NS = 'http://www.w3.org/XML/1998/namespace';
+        let leaveDocBlob = null;
+        let leaveDocName = 'leave-request.docx';
+
+        function dateToIso(date) {
+            return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+        }
+
+        function formatDisplayDate(iso) {
+            const [year, month, day] = iso.split('-');
+            return day + '/' + month + '/' + year;
+        }
+
+        function todayIso() {
+            return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Athens', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+        }
+
+        function countWeekdays(startIso, endIso) {
+            const current = new Date(startIso + 'T00:00:00');
+            const end = new Date(endIso + 'T00:00:00');
+            let days = 0;
+            while (current <= end) {
+                const day = current.getDay();
+                if (day !== 0 && day !== 6) days += 1;
+                current.setDate(current.getDate() + 1);
+            }
+            return days;
+        }
+
+        function readLeaveForm() {
+            const employeeName = document.getElementById('leaveEmployee').value;
+            const dates = leavePicker.selectedDates;
+            const leaveType = LEAVE_TYPES[document.getElementById('leaveReason').value];
+            if (!employeeName || dates.length === 0 || !leaveType) throw new Error('Please fill in all the fields.');
+            return { employeeName, startDate: dateToIso(dates[0]), endDate: dateToIso(dates[dates.length - 1]), leaveType };
+        }
+
+        // Lower-case, accent-free, letters and digits only, so "Ονοματεπώνυμο:" matches "ονοματεπωνυμο"
+        function compactLabel(text) {
+            return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9\u0370-\u03ff]/g, '');
+        }
+
+        function directChildren(element, localName) {
+            return [...element.childNodes].filter((node) => node.nodeType === 1 && node.localName === localName);
+        }
+
+        function setWordCellText(xml, cell, value) {
+            const textNodes = cell.getElementsByTagNameNS(WORD_NS, 't');
+            if (textNodes.length > 0) {
+                textNodes[0].textContent = value;
+                textNodes[0].setAttributeNS(XML_NS, 'xml:space', 'preserve');
+                for (let i = 1; i < textNodes.length; i++) textNodes[i].textContent = '';
+                return;
+            }
+            let paragraph = cell.getElementsByTagNameNS(WORD_NS, 'p')[0];
+            if (!paragraph) {
+                paragraph = xml.createElementNS(WORD_NS, 'w:p');
+                cell.appendChild(paragraph);
+            }
+            const run = xml.createElementNS(WORD_NS, 'w:r');
+            const text = xml.createElementNS(WORD_NS, 'w:t');
+            text.textContent = value;
+            text.setAttributeNS(XML_NS, 'xml:space', 'preserve');
+            run.appendChild(text);
+            paragraph.appendChild(run);
+        }
+
+        // Finds the table row whose label cell matches, and writes the value in the cell next to it
+        function fillWordField(xml, label, value) {
+            for (const row of xml.getElementsByTagNameNS(WORD_NS, 'tr')) {
+                const cells = directChildren(row, 'tc');
+                for (let i = 0; i < cells.length - 1; i++) {
+                    const cellText = [...cells[i].getElementsByTagNameNS(WORD_NS, 't')].map((t) => t.textContent).join('');
+                    if (compactLabel(cellText) === label) {
+                        setWordCellText(xml, cells[i + 1], value);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        async function createLeaveDocument({ employeeName, startDate, endDate, leaveType }) {
+            const days = countWeekdays(startDate, endDate);
+            if (days === 0) throw new Error('The selected period has no working days.');
+
+            const templateResponse = await fetch('local-data/leave-request-template.docx', { cache: 'no-store' });
+            if (!templateResponse.ok) throw new Error('Could not load the leave request template.');
+            const archive = await JSZip.loadAsync(await templateResponse.arrayBuffer());
+            const documentFile = archive.file('word/document.xml');
+            if (!documentFile) throw new Error('The leave request template is not a valid Word file.');
+            const xml = new DOMParser().parseFromString((await documentFile.async('string')).replace(/^\uFEFF/, '').trimStart(), 'application/xml');
+
+            const fields = [
+                ['ονοματεπωνυμο', employeeName],
+                ['ημερομινιαδηλωσης', formatDisplayDate(todayIso())],
+                ['ημερεςαδειας', String(days)],
+                ['απο', formatDisplayDate(startDate)],
+                ['εως', formatDisplayDate(endDate)],
+                ['τυποςαδειας', leaveType]
+            ];
+            for (const [label, value] of fields) {
+                if (!fillWordField(xml, label, value)) throw new Error('A field is missing from the leave request template.');
+            }
+
+            archive.file('word/document.xml', new XMLSerializer().serializeToString(xml));
+            return archive.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+        }
+
+        async function showDocPreview(blob, filename) {
+            leaveDocBlob = blob;
+            leaveDocName = filename;
+            const body = document.getElementById('docPreviewBody');
+            body.innerHTML = '';
+            const modal = document.getElementById('docPreviewModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            await docx.renderAsync(blob, body, null, { className: 'docx', inWrapper: true, ignoreWidth: false, ignoreHeight: true });
+        }
+
+        function downloadLeaveDocument() {
+            if (!leaveDocBlob) return;
+            const url = URL.createObjectURL(leaveDocBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = leaveDocName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        // X closes the document and returns to the chatbox home page
+        function closeDocPreview() {
+            const modal = document.getElementById('docPreviewModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            document.getElementById('docPreviewBody').innerHTML = '';
+            leaveDocBlob = null;
+            resetChat();
         }
 
         function escapeHtml(text) {
