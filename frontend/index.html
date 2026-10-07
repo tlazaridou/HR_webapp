@@ -451,10 +451,16 @@
                 if (!response.ok) throw new Error('Could not load the employee Excel file.');
                 const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
                 const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
-                const header = (rows[0] || []).map((cell) => String(cell).trim().toLowerCase());
-                let nameColumn = header.findIndex((cell) => cell.startsWith('ονοματεπ') || ['full name', 'name', 'employee name'].includes(cell));
-                if (nameColumn < 0) nameColumn = 0;
-                const employees = rows.slice(1).map((row) => String(row[nameColumn] || '').trim()).filter(Boolean);
+                const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+                const firstRow = (rows[0] || []).map((cell) => clean(cell).toLowerCase());
+                const hasHeader = firstRow.some((cell) => cell.startsWith('ονοματεπ') || ['surname', 'last name', 'name', 'full name'].includes(cell));
+                // Column A is the surname, column B the first name; show "First Surname"
+                const employees = rows.slice(hasHeader ? 1 : 0).map((row) => {
+                    const surname = clean(row[0]);
+                    const firstName = clean(row[1]);
+                    if (!firstName || surname.toLowerCase().endsWith(firstName.toLowerCase())) return surname;
+                    return firstName + ' ' + surname;
+                }).filter(Boolean);
                 return { employees, message: 'Add employee names in the Excel file first.' };
             }
         }
