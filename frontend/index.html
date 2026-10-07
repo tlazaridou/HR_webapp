@@ -401,8 +401,22 @@
         tomorrow.setDate(tomorrow.getDate() + 1);
 
         // Συνάρτηση απενεργοποίησης Σαββατοκύριακων (μόνο για Single Day mode)
+        // Public holidays (ISO dates) come from the server, which calculates the Greek ones
+        const publicHolidays = new Set();
+
         function disableWeekends(date) {
-            return (date.getDay() === 0 || date.getDay() === 6);
+            return (date.getDay() === 0 || date.getDay() === 6 || publicHolidays.has(dateToIso(date)));
+        }
+
+        async function loadHolidays() {
+            try {
+                const year = new Date().getFullYear();
+                const response = await fetch('/api/holidays?years=' + [year, year + 1, year + 2].join(','), { cache: 'no-store' });
+                if (!response.ok) return;
+                (await response.json()).holidays.forEach((holiday) => publicHolidays.add(holiday.date));
+                leavePicker.redraw();
+                remotePicker.redraw();
+            } catch (error) { /* without the server there is no holiday list */ }
         }
 
         // Privacy Policy Page View Navigation
@@ -540,6 +554,7 @@
         }
 
         loadEmployees();
+        loadHolidays();
 
         function setCalendarMode(target, mode) {
             markDirty(target === 'leave' ? 'leaveModal' : 'remoteModal');
@@ -905,7 +920,7 @@
             let days = 0;
             while (current <= end) {
                 const day = current.getDay();
-                if (day !== 0 && day !== 6) days += 1;
+                if (day !== 0 && day !== 6 && !publicHolidays.has(dateToIso(current))) days += 1;
                 current.setDate(current.getDate() + 1);
             }
             return days;

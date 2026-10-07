@@ -16,8 +16,9 @@ import threading
 import time
 import zipfile
 from datetime import date, datetime, timedelta
-from functools import partial
+from functools import lru_cache, partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape, unescape
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,37 @@ class RequestError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
+
+
+@lru_cache(maxsize=None)
+def public_holidays(year):
+    """Public holidays of a year as {date: name}: the Greek ones plus the local holiday of Thessaloniki.
+    Easter-based days are calculated."""
+    # Orthodox Easter (Meeus Julian algorithm, +13 days to the Gregorian calendar; valid 1900-2099)
+    a, b, c = year % 4, year % 7, year % 19
+    d = (19 * c + 15) % 30
+    e = (2 * a + 4 * b - d + 34) % 7
+    month, day = divmod(d + e + 114, 31)
+    easter = date(year, month, day + 1) + timedelta(days=13)
+    return {
+        date(year, 1, 1): "New Year's Day",
+        date(year, 1, 6): "Epiphany",
+        easter - timedelta(days=48): "Clean Monday",
+        date(year, 3, 25): "Independence Day",
+        easter - timedelta(days=2): "Good Friday",
+        easter + timedelta(days=1): "Easter Monday",
+        date(year, 5, 1): "Labour Day",
+        easter + timedelta(days=50): "Whit Monday (Holy Spirit)",
+        date(year, 8, 15): "Dormition of the Theotokos",
+        date(year, 10, 26): "Saint Demetrius Day (Thessaloniki)",
+        date(year, 10, 28): "Ochi Day",
+        date(year, 12, 25): "Christmas Day",
+        date(year, 12, 26): "Synaxis of the Theotokos",
+    }
+
+
+def is_holiday(day):
+    return day in public_holidays(day.year)
 
 
 def validate(payload):
@@ -53,6 +85,8 @@ def validate(payload):
             raise RequestError("Dates must be from tomorrow onwards.")
         if day.weekday() >= 5:
             raise RequestError("Remote work can only be requested for weekdays.")
+        if is_holiday(day):
+            raise RequestError("%s is a public holiday (%s)." % (day.strftime("%d/%m/%Y"), public_holidays(day.year)[day]))
         dates.add(day)
     return name, sorted(dates)
 
@@ -205,11 +239,11 @@ def parse_display_date(text):
 
 
 def weekdays_between(start, end):
-    """The Monday-Friday dates from start to end (both included)."""
+    """The working days (Monday-Friday, not a public holiday) from start to end (both included)."""
     days = set()
     current = start
     while current <= end:
-        if current.weekday() < 5:
+        if current.weekday() < 5 and not is_holiday(current):
             days.add(current)
         current += timedelta(days=1)
     return days
@@ -444,6 +478,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path.startswith("/api/holidays"):
+            years = parse_qs(urlparse(self.path).query).get("years", [str(date.today().year)])[0]
+            found = []
+            for text in years.split(",")[:10]:
+                if text.strip().isdigit() and 1900 <= int(text) <= 2099:
+                    found += [{"date": day.isoformat(), "name": name} for day, name in sorted(public_holidays(int(text)).items())]
+            self.send_json(200, {"holidays": found})
+            return
         if self.path == "/api/remote-work":
             try:
                 purge_quietly()
