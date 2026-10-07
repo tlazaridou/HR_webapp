@@ -225,10 +225,6 @@
                     <label class="block text-xs font-semibold uppercase text-gray-500 mb-1">Full Name (from Excel)</label>
                     <select id="leaveEmployee" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-500" onchange="markDirty('leaveModal')">
                         <option value="">Select employee...</option>
-                        <option value="Theodora Lazaridou">Theodora Lazaridou</option>
-                        <option value="Dimitris Papadopoulos">Dimitris Papadopoulos</option>
-                        <option value="Maria Konstantinidou">Maria Konstantinidou</option>
-                        <option value="Georgios Nikolaou">Georgios Nikolaou</option>
                     </select>
                 </div>
                 <div>
@@ -283,10 +279,6 @@
                     <label class="block text-xs font-semibold uppercase text-gray-500 mb-1">Full Name (from Excel)</label>
                     <select id="remoteEmployee" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-500" onchange="markDirty('remoteModal')">
                         <option value="">Select employee...</option>
-                        <option value="Theodora Lazaridou">Theodora Lazaridou</option>
-                        <option value="Dimitris Papadopoulos">Dimitris Papadopoulos</option>
-                        <option value="Maria Konstantinidou">Maria Konstantinidou</option>
-                        <option value="Georgios Nikolaou">Georgios Nikolaou</option>
                     </select>
                 </div>
                 <div>
@@ -445,6 +437,30 @@
             disable: [disableWeekends],
             onChange: () => markDirty('remoteModal')
         });
+
+        // Fill both employee dropdowns from the Excel file served by the backend
+        async function loadEmployees() {
+            try {
+                const response = await fetch('/api/requests/options', { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Could not load employees.');
+                ['leaveEmployee', 'remoteEmployee'].forEach((id) => {
+                    const select = document.getElementById(id);
+                    select.innerHTML = '<option value="">Select employee...</option>';
+                    (data.employees || []).forEach((name) => {
+                        const option = document.createElement('option');
+                        option.value = name;
+                        option.textContent = name;
+                        select.appendChild(option);
+                    });
+                });
+                if (!data.employees || data.employees.length === 0) showToast(data.message || 'Add employee names in the Excel file first.', 'error');
+            } catch (error) {
+                showToast(error instanceof Error ? error.message : 'Could not load employees.', 'error');
+            }
+        }
+
+        loadEmployees();
 
         function setCalendarMode(target, mode) {
             markDirty(target === 'leave' ? 'leaveModal' : 'remoteModal');
