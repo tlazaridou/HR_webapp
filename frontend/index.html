@@ -94,9 +94,9 @@
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"></path></svg>
                         <span class="sidebar-text">New Chat</span>
                     </button>
-                    <button onclick="openRemoteList()" class="w-full mt-2 flex items-center justify-center space-x-2 bg-white hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-4 rounded-xl border border-gray-200 transition-all shadow-sm overflow-hidden" title="Remote Work Dates">
+                    <button onclick="openRemoteList()" class="w-full mt-2 flex items-center justify-center space-x-2 bg-white hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-4 rounded-xl border border-gray-200 transition-all shadow-sm overflow-hidden" title="Remote Work &amp; Leaves">
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18M10 3v18M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"></path></svg>
-                        <span class="sidebar-text">Remote Work Dates</span>
+                        <span class="sidebar-text">Remote Work &amp; Leaves</span>
                     </button>
                 </div>
             </div>
@@ -327,13 +327,13 @@
         </div>
     </div>
 
-    <!-- MODAL: SAVED REMOTE WORK REQUESTS (HR manager) -->
+    <!-- MODAL: SAVED REMOTE WORK AND LEAVE REQUESTS (HR manager) -->
     <div id="remoteListModal" class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4" onclick="if (event.target.id === 'remoteListModal') closeRemoteList()">
-        <div class="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-3xl h-[80vh] flex flex-col overflow-hidden">
+        <div class="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-4xl h-[80vh] flex flex-col overflow-hidden">
             <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-emerald-50 shrink-0">
-                <h3 class="text-lg font-bold text-emerald-900">Remote Work Dates</h3>
+                <h3 class="text-lg font-bold text-emerald-900">Remote Work &amp; Leaves</h3>
                 <div class="flex items-center space-x-2">
-                    <a href="/api/remote-work/download" download="remote-work-dates.xlsx" class="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl shadow-md transition-all text-sm">
+                    <a id="hrDownloadLink" href="/api/remote-work/download" download="remote-work-dates.xlsx" class="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl shadow-md transition-all text-sm">
                         <i class="fas fa-download"></i>
                         <span>Download Excel</span>
                     </a>
@@ -342,15 +342,17 @@
                     </button>
                 </div>
             </div>
-            <div class="px-6 pt-4 shrink-0">
+            <div class="px-6 pt-4 shrink-0 space-y-3">
+                <div class="flex space-x-1 text-sm">
+                    <button type="button" id="hrTabRemote" onclick="setHrTab('remote')" class="px-3 py-1.5 rounded-lg font-medium">Remote Work</button>
+                    <button type="button" id="hrTabLeave" onclick="setHrTab('leave')" class="px-3 py-1.5 rounded-lg font-medium">Leaves</button>
+                </div>
                 <input type="text" id="remoteListSearch" oninput="renderRemoteList()" placeholder="Search by name or date..."
                        class="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-500">
             </div>
             <div class="flex-1 overflow-y-auto px-6 py-4">
                 <table class="w-full text-sm text-left">
-                    <thead class="text-xs uppercase text-gray-500 border-b border-gray-200">
-                        <tr><th class="py-2 pr-4 font-semibold">Full Name</th><th class="py-2 font-semibold">Remote Work Dates</th></tr>
-                    </thead>
+                    <thead id="remoteListHead" class="text-xs uppercase text-gray-500 border-b border-gray-200"></thead>
                     <tbody id="remoteListBody"></tbody>
                 </table>
                 <p id="remoteListEmpty" class="hidden text-center text-gray-400 text-sm py-10"></p>
@@ -752,6 +754,7 @@
                 try {
                     const request = readLeaveForm();
                     const blob = await createLeaveDocument(request);
+                    await saveLeaveRequest(request);
                     closeModal(modalId);
                     clearForm(modalId);
                     await showDocPreview(blob, 'leave-request - ' + request.employeeName + '.docx');
@@ -779,10 +782,11 @@
             return { employeeName, dates };
         }
 
-        async function saveRemoteWorkRequest(request) {
+        // Sends a request to the local server; it rejects overlaps (409) and saves the rest in Excel
+        async function postRequest(url, request) {
             let response;
             try {
-                response = await fetch('/api/remote-work', {
+                response = await fetch(url, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify(request)
@@ -795,25 +799,39 @@
             if (!response.ok) throw new Error(data.error || 'Could not save the request. Start the server with: python frontend/server.py');
         }
 
-        // ---- Remote work list for the HR manager ----
-        let remoteListRows = [];
+        function saveRemoteWorkRequest(request) {
+            return postRequest('/api/remote-work', request);
+        }
 
-        async function openRemoteList() {
+        function saveLeaveRequest(request) {
+            return postRequest('/api/leave-requests', request);
+        }
+
+        // ---- Remote work and leave lists for the HR manager ----
+        const HR_TABS = {
+            remote: {
+                url: '/api/remote-work', download: '/api/remote-work/download', file: 'remote-work-dates.xlsx',
+                columns: ['Full Name', 'Remote Work Dates'],
+                empty: 'No remote work requests yet.',
+                cells: (row) => [row.name, row.dates.join(', ')],
+                matches: (row, query) => row.name.toLowerCase().includes(query) || row.dates.some((date) => date.includes(query))
+            },
+            leave: {
+                url: '/api/leave-requests', download: '/api/leave-requests/download', file: 'leave-requests.xlsx',
+                columns: ['Full Name', 'From', 'To', 'Leave Type', 'Working Days', 'Submitted'],
+                empty: 'No leave requests yet.',
+                cells: (row) => [row.name, row.from, row.to, row.type, row.days, row.submitted],
+                matches: (row, query) => [row.name, row.from, row.to, row.type].some((text) => text.toLowerCase().includes(query))
+            }
+        };
+        let hrTab = 'remote';
+        let hrRows = [];
+
+        function openRemoteList() {
             const modal = document.getElementById('remoteListModal');
             modal.classList.remove('hidden');
             modal.classList.add('flex');
-            document.getElementById('remoteListSearch').value = '';
-            remoteListRows = [];
-            renderRemoteList('Loading...');
-            try {
-                const response = await fetch('/api/remote-work', { cache: 'no-store' });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Could not load the remote work dates.');
-                remoteListRows = data.rows || [];
-                renderRemoteList();
-            } catch (error) {
-                renderRemoteList(error instanceof Error ? error.message : 'Could not load the remote work dates.');
-            }
+            setHrTab('remote');
         }
 
         function closeRemoteList() {
@@ -822,14 +840,41 @@
             modal.classList.remove('flex');
         }
 
+        async function setHrTab(tab) {
+            hrTab = tab;
+            hrRows = [];
+            const config = HR_TABS[tab];
+            document.getElementById('remoteListSearch').value = '';
+            document.getElementById('hrTabRemote').className = 'px-3 py-1.5 rounded-lg font-medium ' + (tab === 'remote' ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200');
+            document.getElementById('hrTabLeave').className = 'px-3 py-1.5 rounded-lg font-medium ' + (tab === 'leave' ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200');
+            const link = document.getElementById('hrDownloadLink');
+            link.href = config.download;
+            link.setAttribute('download', config.file);
+            document.getElementById('remoteListHead').innerHTML = '<tr>' + config.columns.map((column) => '<th class="py-2 pr-4 font-semibold">' + column + '</th>').join('') + '</tr>';
+            renderRemoteList('Loading...');
+            try {
+                const response = await fetch(config.url, { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Could not load the list.');
+                if (hrTab !== tab) return; // the user switched tabs while this was loading
+                hrRows = data.rows || [];
+                renderRemoteList();
+            } catch (error) {
+                if (hrTab === tab) renderRemoteList(error instanceof Error ? error.message : 'Could not load the list.');
+            }
+        }
+
         function renderRemoteList(message) {
+            const config = HR_TABS[hrTab];
             const query = document.getElementById('remoteListSearch').value.trim().toLowerCase();
-            const rows = remoteListRows.filter((row) => !query || row.name.toLowerCase().includes(query) || row.dates.some((date) => date.includes(query)));
+            const rows = hrRows.filter((row) => !query || config.matches(row, query));
             document.getElementById('remoteListBody').innerHTML = rows.map((row) =>
-                '<tr class="border-b border-gray-100 align-top"><td class="py-2 pr-4 text-gray-800 whitespace-nowrap">' + escapeHtml(row.name) + '</td><td class="py-2 text-gray-600">' + escapeHtml(row.dates.join(', ')) + '</td></tr>'
+                '<tr class="border-b border-gray-100 align-top">' + config.cells(row).map((text, index) =>
+                    '<td class="py-2 pr-4 ' + (index === 0 ? 'text-gray-800 whitespace-nowrap' : 'text-gray-600') + '">' + escapeHtml(String(text)) + '</td>'
+                ).join('') + '</tr>'
             ).join('');
             const empty = document.getElementById('remoteListEmpty');
-            const text = message || (rows.length === 0 ? (query ? 'No results.' : 'No remote work requests yet.') : '');
+            const text = message || (rows.length === 0 ? (query ? 'No results.' : config.empty) : '');
             empty.textContent = text;
             empty.classList.toggle('hidden', !text);
         }
