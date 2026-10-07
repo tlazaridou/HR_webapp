@@ -94,6 +94,10 @@
                         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"></path></svg>
                         <span class="sidebar-text">New Chat</span>
                     </button>
+                    <button onclick="openRemoteList()" class="w-full mt-2 flex items-center justify-center space-x-2 bg-white hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-4 rounded-xl border border-gray-200 transition-all shadow-sm overflow-hidden" title="Remote Work Dates">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M3 14h18M10 3v18M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"></path></svg>
+                        <span class="sidebar-text">Remote Work Dates</span>
+                    </button>
                 </div>
             </div>
 
@@ -319,6 +323,37 @@
             <div class="flex space-x-3 pt-2">
                 <button onclick="closeSubmitConfirm(false)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-xl transition-colors">No, go back</button>
                 <button onclick="closeSubmitConfirm(true)" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl transition-colors">Yes, continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: SAVED REMOTE WORK REQUESTS (HR manager) -->
+    <div id="remoteListModal" class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4" onclick="if (event.target.id === 'remoteListModal') closeRemoteList()">
+        <div class="bg-white rounded-2xl shadow-2xl w-[90vw] max-w-3xl h-[80vh] flex flex-col overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-emerald-50 shrink-0">
+                <h3 class="text-lg font-bold text-emerald-900">Remote Work Dates</h3>
+                <div class="flex items-center space-x-2">
+                    <a href="/api/remote-work/download" download="remote-work-dates.xlsx" class="flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl shadow-md transition-all text-sm">
+                        <i class="fas fa-download"></i>
+                        <span>Download Excel</span>
+                    </a>
+                    <button onclick="closeRemoteList()" class="text-gray-400 hover:text-gray-600 p-1 rounded-lg" title="Close">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="px-6 pt-4 shrink-0">
+                <input type="text" id="remoteListSearch" oninput="renderRemoteList()" placeholder="Search by name or date..."
+                       class="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-500">
+            </div>
+            <div class="flex-1 overflow-y-auto px-6 py-4">
+                <table class="w-full text-sm text-left">
+                    <thead class="text-xs uppercase text-gray-500 border-b border-gray-200">
+                        <tr><th class="py-2 pr-4 font-semibold">Full Name</th><th class="py-2 font-semibold">Remote Work Dates</th></tr>
+                    </thead>
+                    <tbody id="remoteListBody"></tbody>
+                </table>
+                <p id="remoteListEmpty" class="hidden text-center text-gray-400 text-sm py-10"></p>
             </div>
         </div>
     </div>
@@ -726,9 +761,77 @@
                 return;
             }
 
-            closeModal(modalId);
-            clearForm(modalId);
-            showToast('Your request was submitted successfully!');
+            try {
+                await saveRemoteWorkRequest(readRemoteForm());
+                closeModal(modalId);
+                clearForm(modalId);
+                showToast('Your request was submitted successfully!');
+            } catch (error) {
+                showToast(error instanceof Error ? error.message : 'Could not submit the request.', 'error');
+            }
+        }
+
+        // ---- Remote work request: saved in local-data/remote-work-dates.xlsx by the local server ----
+        function readRemoteForm() {
+            const employeeName = document.getElementById('remoteEmployee').value;
+            const dates = remotePicker.selectedDates.map(dateToIso);
+            if (!employeeName || dates.length === 0) throw new Error('Please fill in all the fields.');
+            return { employeeName, dates };
+        }
+
+        async function saveRemoteWorkRequest(request) {
+            let response;
+            try {
+                response = await fetch('/api/remote-work', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(request)
+                });
+            } catch (networkError) {
+                throw new Error('Could not reach the server. Start it with: python frontend/server.py');
+            }
+            let data = {};
+            try { data = await response.json(); } catch (parseError) { /* not a JSON reply */ }
+            if (!response.ok) throw new Error(data.error || 'Could not save the request. Start the server with: python frontend/server.py');
+        }
+
+        // ---- Remote work list for the HR manager ----
+        let remoteListRows = [];
+
+        async function openRemoteList() {
+            const modal = document.getElementById('remoteListModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            document.getElementById('remoteListSearch').value = '';
+            remoteListRows = [];
+            renderRemoteList('Loading...');
+            try {
+                const response = await fetch('/api/remote-work', { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Could not load the remote work dates.');
+                remoteListRows = data.rows || [];
+                renderRemoteList();
+            } catch (error) {
+                renderRemoteList(error instanceof Error ? error.message : 'Could not load the remote work dates.');
+            }
+        }
+
+        function closeRemoteList() {
+            const modal = document.getElementById('remoteListModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function renderRemoteList(message) {
+            const query = document.getElementById('remoteListSearch').value.trim().toLowerCase();
+            const rows = remoteListRows.filter((row) => !query || row.name.toLowerCase().includes(query) || row.dates.some((date) => date.includes(query)));
+            document.getElementById('remoteListBody').innerHTML = rows.map((row) =>
+                '<tr class="border-b border-gray-100 align-top"><td class="py-2 pr-4 text-gray-800 whitespace-nowrap">' + escapeHtml(row.name) + '</td><td class="py-2 text-gray-600">' + escapeHtml(row.dates.join(', ')) + '</td></tr>'
+            ).join('');
+            const empty = document.getElementById('remoteListEmpty');
+            const text = message || (rows.length === 0 ? (query ? 'No results.' : 'No remote work requests yet.') : '');
+            empty.textContent = text;
+            empty.classList.toggle('hidden', !text);
         }
 
         // ---- Leave request document ----
