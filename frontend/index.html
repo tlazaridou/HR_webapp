@@ -252,7 +252,7 @@
                     <p class="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4">
                         ⚠️ Warning: Make sure all details are accurate before submitting your request.
                     </p>
-                    <button onclick="promptSubmitForm('leaveModal')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-md transition-all">
+                    <button id="submitLeaveBtn" disabled onclick="promptSubmitForm('leaveModal')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600">
                         Submit Leave Request
                     </button>
                 </div>
@@ -292,7 +292,7 @@
                     <p class="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4">
                         ⚠️ Warning: Remote work requests require prior supervisor approval.
                     </p>
-                    <button onclick="promptSubmitForm('remoteModal')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-md transition-all">
+                    <button id="submitRemoteBtn" disabled onclick="promptSubmitForm('remoteModal')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600">
                         Submit Remote Work Request
                     </button>
                 </div>
@@ -313,15 +313,15 @@
         </div>
     </div>
 
-    <!-- SUBMIT CONFIRMATION MODAL («Είστε σίγουρος;») -->
+    <!-- SUBMIT CONFIRMATION MODAL ("Are you sure?") -->
     <div id="submitConfirmModal" class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm hidden items-center justify-center z-[110] p-4">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center space-y-4">
             <div class="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold">?</div>
-            <h3 class="text-lg font-bold text-gray-900">Είστε σίγουρος;</h3>
-            <p class="text-sm text-gray-500">Θέλετε σίγουρα να υποβάλετε αυτή την αίτηση;</p>
+            <h3 class="text-lg font-bold text-gray-900">Submit Request</h3>
+            <p class="text-sm text-gray-500">Are you sure you want to submit this request?</p>
             <div class="flex space-x-3 pt-2">
-                <button onclick="closeSubmitConfirm(false)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-xl transition-colors">Όχι, επέστρεψε</button>
-                <button onclick="closeSubmitConfirm(true)" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl transition-colors">Ναι, συνέχισε</button>
+                <button onclick="closeSubmitConfirm(false)" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-xl transition-colors">No, go back</button>
+                <button onclick="closeSubmitConfirm(true)" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-xl transition-colors">Yes, continue</button>
             </div>
         </div>
     </div>
@@ -329,7 +329,6 @@
     <!-- Flatpickr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/l10n/gr.js"></script>
 
     <!-- JAVASCRIPT LOGIC -->
     <script>
@@ -421,7 +420,7 @@
 
         // Initialize Flatpickr Calendars
         let leavePicker = flatpickr("#leaveDates", {
-            locale: "gr",
+            locale: { firstDayOfWeek: 1 },
             dateFormat: "d/m/Y",
             mode: "single",
             minDate: tomorrow,
@@ -431,7 +430,7 @@
 
         // Remote work calendar strictly single day, weekdays only
         let remotePicker = flatpickr("#remoteDates", {
-            locale: "gr",
+            locale: { firstDayOfWeek: 1 },
             dateFormat: "d/m/Y",
             mode: "single",
             minDate: tomorrow,
@@ -500,6 +499,7 @@
                 document.getElementById('btnSingleLeave').className = mode === 'single' ? 'px-2 py-0.5 rounded bg-emerald-600 text-white font-medium' : 'px-2 py-0.5 rounded bg-gray-200 text-gray-700 font-medium';
                 document.getElementById('btnRangeLeave').className = mode === 'range' ? 'px-2 py-0.5 rounded bg-emerald-600 text-white font-medium' : 'px-2 py-0.5 rounded bg-gray-200 text-gray-700 font-medium';
             }
+            updateSubmitState(target === 'leave' ? 'leaveModal' : 'remoteModal');
         }
 
         // File Attachment handling
@@ -606,6 +606,7 @@
             document.getElementById(modalId).classList.remove('hidden');
             document.getElementById(modalId).classList.add('flex');
             dirtyStates[modalId] = false;
+            updateSubmitState(modalId);
         }
 
         function closeModal(modalId) {
@@ -626,6 +627,7 @@
                 remotePicker.clear();
             }
             dirtyStates[modalId] = false;
+            updateSubmitState(modalId);
         }
 
         // Κλικ έξω από το modal (backdrop)
@@ -637,6 +639,22 @@
 
         function markDirty(modalId) {
             dirtyStates[modalId] = true;
+            updateSubmitState(modalId);
+        }
+
+        // Submit button stays disabled until every field of the form is filled in
+        function isFormComplete(modalId) {
+            if (modalId === 'leaveModal') {
+                const dates = leavePicker.selectedDates.length;
+                const datesDone = leavePicker.config.mode === 'range' ? dates === 2 : dates === 1;
+                return !!document.getElementById('leaveEmployee').value && datesDone && !!document.getElementById('leaveReason').value;
+            }
+            return !!document.getElementById('remoteEmployee').value && remotePicker.selectedDates.length === 1;
+        }
+
+        function updateSubmitState(modalId) {
+            const button = document.getElementById(modalId === 'leaveModal' ? 'submitLeaveBtn' : 'submitRemoteBtn');
+            button.disabled = !isFormComplete(modalId);
         }
 
         // Έλεγχος εξόδου (Dirty State)
@@ -663,6 +681,7 @@
 
         // Έλεγχος υποβολής («Είστε σίγουρος;»)
         function promptSubmitForm(modalId) {
+            if (!isFormComplete(modalId)) return;
             modalPendingSubmit = modalId;
             document.getElementById('submitConfirmModal').classList.remove('hidden');
             document.getElementById('submitConfirmModal').classList.add('flex');
@@ -676,7 +695,7 @@
                 let modalId = modalPendingSubmit;
                 closeModal(modalId);
                 clearForm(modalId);
-                showToast('Η αίτηση υποβλήθηκε επιτυχώς!');
+                showToast('Your request was submitted successfully!');
             }
             modalPendingSubmit = null;
         }
