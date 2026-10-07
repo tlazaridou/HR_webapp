@@ -328,6 +328,7 @@
 
     <!-- Flatpickr JS -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/flatpickr.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flatpickr/4.6.13/l10n/gr.js"></script>
 
     <!-- JAVASCRIPT LOGIC -->
@@ -438,23 +439,41 @@
             onChange: () => markDirty('remoteModal')
         });
 
-        // Fill both employee dropdowns from the Excel file served by the backend
-        async function loadEmployees() {
+        // Names come from the backend API when available, otherwise straight from the Excel file in local-data/
+        async function fetchEmployees() {
             try {
                 const response = await fetch('/api/requests/options', { cache: 'no-store' });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Could not load employees.');
+                return { employees: data.employees || [], message: data.message };
+            } catch (apiError) {
+                const response = await fetch('local-data/employees-and-remote-work.xlsx', { cache: 'no-store' });
+                if (!response.ok) throw new Error('Could not load the employee Excel file.');
+                const workbook = XLSX.read(await response.arrayBuffer(), { type: 'array' });
+                const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
+                const header = (rows[0] || []).map((cell) => String(cell).trim().toLowerCase());
+                let nameColumn = header.findIndex((cell) => cell.startsWith('ονοματεπ') || ['full name', 'name', 'employee name'].includes(cell));
+                if (nameColumn < 0) nameColumn = 0;
+                const employees = rows.slice(1).map((row) => String(row[nameColumn] || '').trim()).filter(Boolean);
+                return { employees, message: 'Add employee names in the Excel file first.' };
+            }
+        }
+
+        // Fill both employee dropdowns
+        async function loadEmployees() {
+            try {
+                const data = await fetchEmployees();
                 ['leaveEmployee', 'remoteEmployee'].forEach((id) => {
                     const select = document.getElementById(id);
                     select.innerHTML = '<option value="">Select employee...</option>';
-                    (data.employees || []).forEach((name) => {
+                    data.employees.forEach((name) => {
                         const option = document.createElement('option');
                         option.value = name;
                         option.textContent = name;
                         select.appendChild(option);
                     });
                 });
-                if (!data.employees || data.employees.length === 0) showToast(data.message || 'Add employee names in the Excel file first.', 'error');
+                if (data.employees.length === 0) showToast(data.message || 'Add employee names in the Excel file first.', 'error');
             } catch (error) {
                 showToast(error instanceof Error ? error.message : 'Could not load employees.', 'error');
             }
