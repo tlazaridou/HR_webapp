@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -169,6 +170,12 @@ def append_request(name, dates):
         sheet = sheet.replace("</sheetData>", '<row r="%d">%s</row></sheetData>' % (row_number, added), 1)
         new_dates = wanted
 
+    save_sheet(sheet)
+    return len(new_dates)
+
+
+def save_sheet(sheet):
+    """Fix the sheet dimension and write the sheet back into the workbook."""
     last_column = max(column_index(letters) for letters in re.findall(r'<c r="([A-Z]+)\d+"', sheet))
     last_row = max(int(number) for number in re.findall(r'<row r="(\d+)"', sheet))
     sheet = re.sub(r'<dimension ref="[^"]*"/>', '<dimension ref="A1:%s%d"/>' % (column_letter(last_column), last_row), sheet, count=1)
@@ -184,7 +191,66 @@ def append_request(name, dates):
     except PermissionError:
         os.remove(temp_path)
         raise RequestError("The Excel file is open in another program. Close it and try again.", 409)
-    return len(new_dates)
+
+
+def purge_expired():
+    """Delete the dates that are already in the past (and the rows left without dates)."""
+    sheet, shared = load_book()
+    today = date.today()
+    kept_rows = []
+    changed = False
+    for number, content in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', sheet, re.S):
+        if number == "1":
+            continue
+        cells = row_cells(content, shared)
+        name = cells.get(1, "")
+        dates = [text for index, text in sorted(cells.items()) if index > 1 and text]
+        upcoming = []
+        for text in dates:
+            try:
+                expired = datetime.strptime(text, "%d/%m/%Y").date() < today
+            except ValueError:
+                expired = False  # not a date: leave it alone
+            if not expired:
+                upcoming.append(text)
+        if len(upcoming) != len(dates) or not (name or upcoming):
+            changed = True
+        if name and upcoming:
+            kept_rows.append((name, sort_dates(upcoming)))
+        elif not name and upcoming:
+            kept_rows.append(("", sort_dates(upcoming)))
+        elif name:
+            changed = True
+    if not changed:
+        return 0
+
+    rows_xml = ""
+    for offset, (name, dates) in enumerate(kept_rows):
+        number = offset + 2
+        rows_xml += '<row r="%d">%s%s</row>' % (
+            number,
+            text_cell("A%d" % number, name),
+            "".join(text_cell("%s%d" % (column_letter(2 + position), number), day) for position, day in enumerate(dates)),
+        )
+    header = re.search(r'<row r="1"[^>]*>.*?</row>', sheet, re.S)
+    sheet = re.sub(r"<sheetData>.*</sheetData>", lambda match: "<sheetData>" + (header.group(0) if header else "") + rows_xml + "</sheetData>", sheet, count=1, flags=re.S)
+    save_sheet(sheet)
+    return 1
+
+
+def purge_quietly():
+    """Run the clean-up; if the file is busy it is simply retried on the next round."""
+    try:
+        with write_lock:
+            purge_expired()
+    except Exception as error:
+        print("Clean-up skipped:", error)
+
+
+def purge_forever(interval_seconds=600):
+    while True:
+        purge_quietly()
+        time.sleep(interval_seconds)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -203,6 +269,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/remote-work":
             try:
+                purge_quietly()
                 with write_lock:
                     rows = read_rows()
                 self.send_json(200, {"rows": rows})
@@ -212,6 +279,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(500, {"error": "Could not read the saved requests."})
             return
         if self.path == "/api/remote-work/download":
+            purge_quietly()
             try:
                 with write_lock, open(REMOTE_BOOK, "rb") as book:
                     data = book.read()
@@ -251,6 +319,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5500
+    threading.Thread(target=purge_forever, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, directory=ROOT))
     print("Serving the front end at http://localhost:%d" % port)
     server.serve_forever()
